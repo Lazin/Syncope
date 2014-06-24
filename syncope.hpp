@@ -45,21 +45,28 @@ namespace detail {
 
 // namespace locks
 
-    template<class Hash, class T>
+    template<class T>
     class LockGuard {
-        T const* ptr_;
+        size_t value_;
+        bool owns_lock_;
         detail::LockLayerImpl& lock_pool_;
-        Hash hash_;
 
-        void lock() const {
-            lock_pool_.lock(hash_(reinterpret_cast<size_t>(ptr_)));
+        void lock() {
+            lock_pool_.lock(value_);
+            owns_lock_ = true;
         }
 
-        void unlock() const {
-            lock_pool_.unlock(hash_(reinterpret_cast<size_t>(ptr_)));
+        void unlock() {
+            lock_pool_.unlock(value_);
+            owns_lock_ = false;
         }
     public:
-        LockGuard(T const* ptr, detail::LockLayerImpl& lockpool) : ptr_(ptr), lock_pool_(lockpool) {
+        template<typename Hash>
+        LockGuard(T const* ptr, detail::LockLayerImpl& lockpool, Hash const& hash)
+            : value_(hash(reinterpret_cast<size_t>(ptr)))
+            , owns_lock_(false)
+            , lock_pool_(lockpool)
+        {
             lock();
         }
 
@@ -67,77 +74,105 @@ namespace detail {
 
         LockGuard& operator = (LockGuard const&) = delete;
 
-        LockGuard(LockGuard&& other) : ptr_(other.ptr_), lock_pool_(other.lock_pool_) {
-            other.ptr_ = nullptr;
+        LockGuard(LockGuard&& other)
+            : value_(other.value_)
+            , owns_lock_(other.owns_lock_)
+            , lock_pool_(other.lock_pool_)
+        {
+            other.owns_lock_ = false;
         }
 
         LockGuard& operator = (LockGuard&& other) {
-            ptr_ = other.ptr_;
-            other.ptr_ = nullptr;
+            value_ = other.value_;
+            other.owns_lock_ = false;
             assert(&lock_pool_ == &other.lock_pool_);
         }
 
         ~LockGuard() {
-            if (ptr_ != nullptr) {
+            if (owns_lock_) {
                 unlock();
             }
         }
     };
 
-    template<class Hash, int P, typename... T>
+    template<int P, typename... T>
     class LockGuardMany {
         enum {
             H = sizeof...(T)*P  // hashes array size (can be greater than sizeof...(T))
         };
         detail::LockLayerImpl& impl_;
         std::array<size_t, H> hashes_;
+        bool owns_lock_;
 
         template<int I, int M, int H>
         struct fill_hashes
         {
-            void operator () (std::array<size_t, H>& hashes, std::tuple<T const*...> const& items) {
-                Hash hash;
+            template<typename Hash>
+            void operator () (std::array<size_t, H>& hashes, std::tuple<T const*...> const& items, Hash const& hash) {
                 const auto p = std::get<I>(items);
                 for (int i = 0; i < P; i++) {
                     size_t h = hash(reinterpret_cast<size_t>(p), i);
                     hashes[I*P + i] = h;
                 }
                 fill_hashes<I + 1, M, H> fh;
-                fh(hashes, items);
+                fh(hashes, items, hash);
             }
         };
 
         template<int M, int H>
         struct fill_hashes<M, M, H>{
-            void operator() (std::array<size_t, H>& hashes, std::tuple<T const*...> const& items) {}
+            template<typename Hash>
+            void operator() (std::array<size_t, H>& hashes, std::tuple<T const*...> const& items, Hash const& hash) {}
         };
 
-        void lock() const {
+        void lock() {
             for (auto h: hashes_) {
                 impl_.lock(h);
             }
+            owns_lock_ = true;
         }
 
-        void unlock() const {
+        void unlock() {
             for (auto it = hashes_.crbegin(); it != hashes_.crend(); it++) {
                 impl_.unlock(*it);
             }
+            owns_lock_ = false;
         }
 
     public:
 
-        LockGuardMany(detail::LockLayerImpl& impl, T const*... others)
+        template<typename Hash>
+        LockGuardMany(detail::LockLayerImpl& impl, Hash const& hash, T const*... others)
             : impl_(impl)
+            , owns_lock_(false)
         {
             auto all = std::tie(others...);
             fill_hashes<0, sizeof...(others), H> fill_all;
-            fill_all(hashes_, all);
+            fill_all(hashes_, all, hash);
             std::sort(hashes_.begin(), hashes_.end());
             lock();
         }
 
         ~LockGuardMany() {
             unlock();
+        }
+
+        LockGuardMany(LockGuardMany const&) = delete;
+        LockGuardMany& operator = (LockGuardMany const&) = delete;
+
+        LockGuardMany(LockGuardMany&& other)
+            : impl_(other.impl_)
+            , owns_lock_(other.owns_lock_)
+        {
+            std::swap(hashes_, other.hashes_);
+            other.owns_lock_ = false;
+        }
+
+        LockGuardMany& operator = (LockGuardMany&& other) {
+            assert(&other.impl_ == &impl_);
+            std::swap(hashes_, other.hashes_);
+            owns_lock_ = other.owns_lock_;
+            other.owns_lock_ = false;
         }
     };
 
@@ -153,19 +188,17 @@ namespace detail {
         const char* str() const { return str_; }
     };
 
-    //! Simple hash - uses std::hash internally
+    //! Simple hash - simply returns it's argument
     struct SimpleHash {
         size_t operator() (size_t value) const {
-            std::hash<size_t> hash;
-            return hash(value);
+            return value;
         }
     };
 
-    //! Simple hash - uses std::hash and ignores bias
+    //! Simple hash
     struct SimpleHash2 {
         size_t operator() (size_t value, int bias) const {
-            std::hash<size_t> hash;
-            return hash(value);
+            return value;
         }
     };
 
@@ -173,11 +206,10 @@ namespace detail {
     struct BiasedHash {
         static_assert((P & (P - 1)) == 0, "P must be a power of two");
         size_t operator() (size_t value) const {
-            std::hash<size_t> hash;
-            std::hash<std::thread::id> thash;
+            std::hash<std::thread::id> hash;
             auto id = std::this_thread::get_id();
-            size_t bias = thash(id);
-            return hash(value) + (bias & (P - 1));
+            size_t bias = hash(id);
+            return value + (bias & (P - 1));
         }
     };
 
@@ -185,8 +217,7 @@ namespace detail {
     struct BiasedHash2 {
         static_assert((P & (P - 1)) == 0, "P must be a power of two");
         size_t operator() (size_t value, int bias) const {
-            std::hash<size_t> hash;
-            return hash(value) + (bias & (P - 1));
+            return value + (bias & (P - 1));
         }
     };
 
@@ -204,13 +235,13 @@ namespace detail {
         SymmetricLockLayer(detail::StaticString name) : impl_(name.str()) {}
 
         template<class T>
-        LockGuard<detail::SimpleHash, T> synchronize(T const* ptr) {
-            return std::move(LockGuard<detail::SimpleHash, T>(ptr, impl_));
+        LockGuard<T> synchronize(T const* ptr) {
+            return std::move(LockGuard<T>(ptr, impl_, detail::SimpleHash()));
         }
 
         template<typename... T>
-        LockGuardMany<detail::SimpleHash2, 1, T...> synchronize(T const*... args) {
-            return std::move(LockGuardMany<detail::SimpleHash2, 1, T...>(impl_, args...));
+        LockGuardMany<1, T...> synchronize(T const*... args) {
+            return std::move(LockGuardMany<1, T...>(impl_, detail::SimpleHash2(), args...));
         }
     };
     
@@ -229,15 +260,15 @@ namespace detail {
         AsymmetricLockLayer(detail::StaticString name) : impl_(name.str()) {}
 
         template<class T>
-        LockGuard<detail::BiasedHash<P>, T> read_lock(T const* ptr) {
-            return std::move(LockGuard<detail::BiasedHash<P>, T>(ptr, impl_));
+        LockGuard<T> read_lock(T const* ptr) {
+            return std::move(LockGuard<T>(ptr, impl_, detail::BiasedHash<P>()));
         }
 
         template<typename... T>
-        LockGuardMany<detail::BiasedHash2<P>, P, T...> write_lock(T const*... args) {
-            return std::move(LockGuardMany<detail::BiasedHash2<P>, P, T...>(impl_, args...));
+        LockGuardMany<P, T...> write_lock(T const*... args) {
+            return std::move(LockGuardMany<P, T...>(impl_, detail::BiasedHash2<P>(), args...));
         }
     };
 }  // namespace syncope
 
-#define STATIC_STRING(x) locks::detail::StaticString(x"")
+#define STATIC_STRING(x) syncope::detail::StaticString(x"")
