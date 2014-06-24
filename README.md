@@ -92,3 +92,5 @@ auto outer_lock = outer_lock_layer.synchronize(&a);
   auto inner_lock = internal_lock_layer.synchronize(&b);  // OK!
 }
 ```
+Just remember that nesting locks from the same lock layer is bad and completely defeats the purpose of the library (splitting all your locks between lock-hierarchy layers).
+
