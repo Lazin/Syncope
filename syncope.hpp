@@ -13,7 +13,7 @@
 #include <algorithm>
 #include <thread>
 
-namespace locks {
+namespace syncope {
 
 namespace detail {
 
@@ -194,19 +194,14 @@ namespace detail {
 
     /** Lock hierarchy layer.
       */
-    class LockLayer {
+    class SymmetricLockLayer {
         detail::LockLayerImpl impl_;
-        enum {
-            P = READ_SIDE_PARALLELISM  // Parallelism factor for readers and writers
-        };
     public:
-
+    
         /** C-tor
           * @param name statically initialized string
           */
-        LockLayer(detail::StaticString name) : impl_(name.str()) {}
-
-        // Symetric locks
+        SymmetricLockLayer(detail::StaticString name) : impl_(name.str()) {}
 
         template<class T>
         LockGuard<detail::SimpleHash, T> synchronize(T const* ptr) {
@@ -217,8 +212,21 @@ namespace detail {
         LockGuardMany<detail::SimpleHash2, 1, T...> synchronize(T const*... args) {
             return std::move(LockGuardMany<detail::SimpleHash2, 1, T...>(impl_, args...));
         }
+    };
+    
+    /** Asymmetric lock hierarchy layer.
+      */
+    class AsymmetricLockLayer {
+        detail::LockLayerImpl impl_;
+        enum {
+            P = READ_SIDE_PARALLELISM  // Parallelism factor for readers and writers
+        };
+    public:
 
-        // Asymetric locks
+        /** C-tor
+          * @param name statically initialized string
+          */
+        AsymmetricLockLayer(detail::StaticString name) : impl_(name.str()) {}
 
         template<class T>
         LockGuard<detail::BiasedHash<P>, T> read_lock(T const* ptr) {
@@ -230,6 +238,6 @@ namespace detail {
             return std::move(LockGuardMany<detail::BiasedHash2<P>, P, T...>(impl_, args...));
         }
     };
-}  // namespace locks
+}  // namespace syncope
 
 #define STATIC_STRING(x) locks::detail::StaticString(x"")
