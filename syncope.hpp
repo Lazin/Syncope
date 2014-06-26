@@ -1,8 +1,8 @@
-#ifndef SYNCHRONIZE_LOCKS_NUM
-#   define SYNCHRONIZE_LOCKS_NUM 0x100
+#ifndef SYNCOPE_NUM_LOCKS
+#   define SYNCOPE_NUM_LOCKS 0x100
 #endif
-#ifndef READ_SIDE_PARALLELISM
-#   define READ_SIDE_PARALLELISM 0x8
+#ifndef SYNCOPE_READ_SIDE_PARALLELISM
+#   define SYNCOPE_READ_SIDE_PARALLELISM 0x8
 #endif
 
 #include <iostream>
@@ -17,13 +17,15 @@ namespace syncope {
 
 namespace detail {
 
+    static const int CACHE_LINE_BITS = 6;
+
     class LockLayerImpl {
         enum {
-            N = SYNCHRONIZE_LOCKS_NUM
+            N = SYNCOPE_NUM_LOCKS
         };
-        static_assert((N & (N - 1)) == 0, "N (SYNCHRONIZE_LOCKS_NUM) must be a power of two");
+        static_assert((N & (N - 1)) == 0, "N (SYNCOPE_NUM_LOCKS) must be a power of two");
         static const int MASK = N - 1;
-        typedef std::recursive_mutex MutexT;
+        typedef std::mutex MutexT;
         mutable std::array<MutexT, N> mutexes_;
         const char* name_;
     public:
@@ -154,7 +156,9 @@ namespace detail {
         }
 
         ~LockGuardMany() {
-            unlock();
+            if (owns_lock_) {
+                unlock();
+            }
         }
 
         LockGuardMany(LockGuardMany const&) = delete;
@@ -191,14 +195,14 @@ namespace detail {
     //! Simple hash - simply returns it's argument
     struct SimpleHash {
         size_t operator() (size_t value) const {
-            return value;
+            return value >> CACHE_LINE_BITS;
         }
     };
 
     //! Simple hash
     struct SimpleHash2 {
         size_t operator() (size_t value, int bias) const {
-            return value;
+            return value >> CACHE_LINE_BITS;
         }
     };
 
@@ -209,7 +213,7 @@ namespace detail {
             std::hash<std::thread::id> hash;
             auto id = std::this_thread::get_id();
             size_t bias = hash(id);
-            return value + (bias & (P - 1));
+            return (value >> CACHE_LINE_BITS) + (bias & (P - 1));
         }
     };
 
@@ -217,7 +221,7 @@ namespace detail {
     struct BiasedHash2 {
         static_assert((P & (P - 1)) == 0, "P must be a power of two");
         size_t operator() (size_t value, int bias) const {
-            return value + (bias & (P - 1));
+            return (value >> CACHE_LINE_BITS) + (bias & (P - 1));
         }
     };
 
@@ -250,7 +254,7 @@ namespace detail {
     class AsymmetricLockLayer {
         detail::LockLayerImpl impl_;
         enum {
-            P = READ_SIDE_PARALLELISM  // Parallelism factor for readers and writers
+            P = SYNCOPE_READ_SIDE_PARALLELISM  // Parallelism factor for readers and writers
         };
     public:
 
