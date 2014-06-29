@@ -1,0 +1,7 @@
+project(Syncope)
+cmake_minimum_required(VERSION 2.8)
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DDEBUG -Wall -pthread")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Wall -pthread")
+add_definitions(-std=gnu++0x)
+add_subdirectory(benchmark)
+add_subdirectory(test)
