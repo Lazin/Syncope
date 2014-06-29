@@ -5,19 +5,109 @@
 #   define SYNCOPE_READ_SIDE_PARALLELISM 0x8
 #endif
 
+#ifndef SYNCOPE_MAX_LAYERS
+#   define SYNCOPE_MAX_LAYERS 100
+#endif
+
+#ifndef SYNCOPE_MAX_DEPTH
+#   define SYNCOPE_MAX_DEPTH 0x10
+#endif
+
+#define SYNCOPE_THROW_ON_DEADLOCK
+
+#define SYNCOPE_DETECT_DEADLOCKS
+
 #include <iostream>
 #include <array>
+#include <string>
 #include <mutex>
 #include <memory>
 #include <functional>
 #include <algorithm>
 #include <thread>
+#include <atomic>
+#include <cassert>
+#include <cstring>
+#include <exception>
+#include <sstream>
 
 namespace syncope {
+
+    class EDeadlock : public std::exception {
+        std::string msg;
+    public:
+        EDeadlock(std::string const& msg)
+            : msg(msg)
+        {
+        }
+
+        const char* what() const throw() {
+            return msg.c_str();
+        }
+    };
 
 namespace detail {
 
     static const int CACHE_LINE_BITS = 6;
+
+    class LockLayerImpl;
+
+    struct TraceRoot {
+        LockLayerImpl** owners;
+        size_t top;
+
+        TraceRoot() 
+            : owners(new LockLayerImpl*[SYNCOPE_MAX_DEPTH])
+            , top(0)
+        {
+        }
+
+        ~TraceRoot() {
+            delete[] owners;
+        }
+    };
+
+    class Detector {
+        static const int TRANSITIONS_SIZE = SYNCOPE_MAX_LAYERS * SYNCOPE_MAX_LAYERS;
+        struct CounterWithPad {
+            std::atomic<size_t> counter;
+            char pad[64 - sizeof(counter)];
+            CounterWithPad()
+                : counter{0}
+            {
+            }
+        };
+        std::array<CounterWithPad, TRANSITIONS_SIZE> transitions;
+        Detector() {}
+    public:
+        static Detector& inst() {
+            static Detector d;
+            return d;
+        }
+
+        void on_lock(int id_prev, int id_curr, LockLayerImpl* curr) {
+            int x, y, dir;
+            if (id_prev > id_curr)  {
+                x = id_prev;
+                y = id_curr;
+                dir = 1;
+            } else if (id_prev < id_curr){
+                y = id_prev;
+                x = id_curr;
+                dir = 2;
+            } else {
+                on_deadlock(curr, "recursion detected");
+                return;
+            }
+            int addr = y*SYNCOPE_MAX_LAYERS + x;
+            int res = transitions[addr].counter.exchange(dir);
+            if (res && res != dir) {
+                on_deadlock(curr, "deadlock detected");
+            }
+        }
+
+        void on_deadlock(LockLayerImpl* curr, const char* message);
+    };
 
     class LockLayerImpl {
         enum {
@@ -28,21 +118,84 @@ namespace detail {
         typedef std::mutex MutexT;
         mutable std::array<MutexT, N> mutexes_;
         const char* name_;
+        int level_;
+        const int id_;
+        static thread_local TraceRoot tls_root;
+        static std::atomic<int> layers_counter;
     public:
-        LockLayerImpl(const char* name) : name_(name) {}
+        LockLayerImpl(const char* name, int level)
+            : name_(name)
+            , level_(level)
+            , id_(layers_counter++)
+        {
+        }
+
         LockLayerImpl(LockLayerImpl const&) = delete;
         LockLayerImpl& operator = (LockLayerImpl const&) = delete;
 
-        void lock(size_t hash) const {
+        void lock(size_t hash) {
             size_t ix = hash & MASK;
             mutexes_[ix].lock();
         }
 
-        void unlock(size_t hash) const {
+
+        void unlock(size_t hash) {
             size_t ix = hash & MASK;
             mutexes_[ix].unlock();
         }
+
+#ifdef SYNCOPE_DETECT_DEADLOCKS
+        void detector_lock() {
+            TraceRoot& root = tls_root;
+            if (root.top > SYNCOPE_MAX_DEPTH) {
+                report_error("max depth reached");
+            }
+            root.owners[root.top] = this;
+            root.top++;
+            if (root.top > 1) {
+                Detector::inst().on_lock( root.owners[root.top-2]->id_
+                                        , root.owners[root.top-1]->id_
+                                        , this);
+            }
+        }
+
+        void detector_unlock() {
+            TraceRoot& root = tls_root;
+            if (root.top == 0) {
+                report_error("double unlock");
+            }
+            root.top--;
+        }
+
+        void report_error(const char* message) const {
+            TraceRoot& root = tls_root;
+            std::stringstream sstream;
+            sstream << "Deadlock detector - " << message << std::endl;
+            for (auto i = 0u; i < root.top; i++) {
+                auto layer = root.owners[i];
+                if (layer == nullptr) {
+                    break;
+                }
+                sstream << "layer[" << i << "] is " << layer->name_ << std::endl;
+            }
+#ifndef SYNCOPE_THROW_ON_DEADLOCK
+            std::cout << sstream.str() << std::endl;
+            std::terminate();
+#else
+            throw EDeadlock(sstream.str());
+#endif
+        }
+#endif
     };
+
+    std::atomic<int> LockLayerImpl::layers_counter{0};
+    thread_local TraceRoot LockLayerImpl::tls_root;
+
+    void Detector::on_deadlock(LockLayerImpl* curr, const char* message) {
+#ifdef SYNCOPE_DETECT_DEADLOCKS
+        curr->report_error(message);
+#endif
+    }
 } // namespace detail
 
 // namespace locks
@@ -54,11 +207,17 @@ namespace detail {
         detail::LockLayerImpl& lock_pool_;
 
         void lock() {
+#ifdef SYNCOPE_DETECT_DEADLOCKS
+            lock_pool_.detector_lock();
+#endif
             lock_pool_.lock(value_);
             owns_lock_ = true;
         }
 
         void unlock() {
+#ifdef SYNCOPE_DETECT_DEADLOCKS
+            lock_pool_.detector_unlock();
+#endif
             lock_pool_.unlock(value_);
             owns_lock_ = false;
         }
@@ -128,6 +287,9 @@ namespace detail {
         };
 
         void lock() {
+#ifdef SYNCOPE_DETECT_DEADLOCKS
+            impl_.detector_lock();
+#endif
             for (auto h: hashes_) {
                 impl_.lock(h);
             }
@@ -135,6 +297,9 @@ namespace detail {
         }
 
         void unlock() {
+#ifdef SYNCOPE_DETECT_DEADLOCKS
+            impl_.detector_unlock();
+#endif
             for (auto it = hashes_.crbegin(); it != hashes_.crend(); it++) {
                 impl_.unlock(*it);
             }
@@ -232,11 +397,11 @@ namespace detail {
     class SymmetricLockLayer {
         detail::LockLayerImpl impl_;
     public:
-    
+
         /** C-tor
           * @param name statically initialized string
           */
-        SymmetricLockLayer(detail::StaticString name) : impl_(name.str()) {}
+        SymmetricLockLayer(detail::StaticString name, int level = -1) : impl_(name.str(), level) {}
 
         template<class T>
         LockGuard<T> synchronize(T const* ptr) {
@@ -248,7 +413,7 @@ namespace detail {
             return std::move(LockGuardMany<1, T...>(impl_, detail::SimpleHash2(), args...));
         }
     };
-    
+
     /** Asymmetric lock hierarchy layer.
       */
     class AsymmetricLockLayer {
@@ -261,7 +426,7 @@ namespace detail {
         /** C-tor
           * @param name statically initialized string
           */
-        AsymmetricLockLayer(detail::StaticString name) : impl_(name.str()) {}
+        AsymmetricLockLayer(detail::StaticString name, int level = -1) : impl_(name.str(), level) {}
 
         template<class T>
         LockGuard<T> read_lock(T const* ptr) {
