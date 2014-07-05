@@ -1,3 +1,5 @@
+// TODO: add licence
+
 #ifndef SYNCOPE_NUM_LOCKS
 #   define SYNCOPE_NUM_LOCKS 0x100
 #endif
@@ -12,10 +14,6 @@
 #ifndef SYNCOPE_MAX_DEPTH
 #   define SYNCOPE_MAX_DEPTH 0x10
 #endif
-
-#define SYNCOPE_THROW_ON_DEADLOCK
-
-#define SYNCOPE_DETECT_DEADLOCKS
 
 #include <iostream>
 #include <array>
@@ -33,19 +31,6 @@
 
 namespace syncope {
 
-    class EDeadlock : public std::exception {
-        std::string msg;
-    public:
-        EDeadlock(std::string const& msg)
-            : msg(msg)
-        {
-        }
-
-        const char* what() const throw() {
-            return msg.c_str();
-        }
-    };
-
 namespace detail {
 
     static const int CACHE_LINE_BITS = 6;
@@ -53,11 +38,12 @@ namespace detail {
     class LockLayerImpl;
 
     struct TraceRoot {
-        LockLayerImpl** owners;
-        size_t top;
+        typedef std::tuple<LockLayerImpl*, const char*> Owner;
+        Owner* owners;
+        int top;
 
         TraceRoot() 
-            : owners(new LockLayerImpl*[SYNCOPE_MAX_DEPTH])
+            : owners(new Owner[SYNCOPE_MAX_DEPTH])
             , top(0)
         {
         }
@@ -85,26 +71,7 @@ namespace detail {
             return d;
         }
 
-        void on_lock(int id_prev, int id_curr, LockLayerImpl* curr) {
-            int x, y, dir;
-            if (id_prev > id_curr)  {
-                x = id_prev;
-                y = id_curr;
-                dir = 1;
-            } else if (id_prev < id_curr){
-                y = id_prev;
-                x = id_curr;
-                dir = 2;
-            } else {
-                on_deadlock(curr, "recursion detected");
-                return;
-            }
-            int addr = y*SYNCOPE_MAX_LAYERS + x;
-            int res = transitions[addr].counter.exchange(dir);
-            if (res && res != dir) {
-                on_deadlock(curr, "deadlock detected");
-            }
-        }
+        void on_lock(TraceRoot::Owner const& prev, TraceRoot::Owner const& curr);
 
         void on_deadlock(LockLayerImpl* curr, const char* message);
     };
@@ -144,18 +111,24 @@ namespace detail {
             mutexes_[ix].unlock();
         }
 
+        int get_id() const {
+            return id_;
+        }
+
 #ifdef SYNCOPE_DETECT_DEADLOCKS
-        void detector_lock() {
+
+        void detector_lock(const char* loc) {
             TraceRoot& root = tls_root;
             if (root.top > SYNCOPE_MAX_DEPTH) {
                 report_error("max depth reached");
             }
-            root.owners[root.top] = this;
+            root.owners[root.top] = std::make_tuple(this, loc);
             root.top++;
-            if (root.top > 1) {
-                Detector::inst().on_lock( root.owners[root.top-2]->id_
-                                        , root.owners[root.top-1]->id_
-                                        , this);
+            auto top = root.top;
+            for (int i = top - 2; i >= 0; i--) {
+                Detector::inst().on_lock( root.owners[i]
+                                        , root.owners[root.top-1]);
+                break;
             }
         }
 
@@ -171,19 +144,13 @@ namespace detail {
             TraceRoot& root = tls_root;
             std::stringstream sstream;
             sstream << "Deadlock detector - " << message << std::endl;
-            for (auto i = 0u; i < root.top; i++) {
-                auto layer = root.owners[i];
-                if (layer == nullptr) {
-                    break;
-                }
-                sstream << "layer[" << i << "] is " << layer->name_ << std::endl;
+            for (auto i = 0; i < root.top; i++) {
+                auto layer = std::get<0>(root.owners[i]);
+                auto loc = std::get<1>(root.owners[i]);
+                sstream << "layer[" << i << "] is " << layer->name_ << " at " << loc << std::endl;
             }
-#ifndef SYNCOPE_THROW_ON_DEADLOCK
             std::cout << sstream.str() << std::endl;
             std::terminate();
-#else
-            throw EDeadlock(sstream.str());
-#endif
         }
 #endif
     };
@@ -196,6 +163,31 @@ namespace detail {
         curr->report_error(message);
 #endif
     }
+
+    void Detector::on_lock(TraceRoot::Owner const& prev, TraceRoot::Owner const& curr) {
+        LockLayerImpl* prev_layer = std::get<0>(prev);
+        LockLayerImpl* curr_layer = std::get<0>(curr);
+        auto id_prev = prev_layer->get_id();
+        auto id_curr = curr_layer->get_id();
+        int x, y, dir;
+        if (id_prev > id_curr)  {
+            x = id_prev;
+            y = id_curr;
+            dir = 1;
+        } else if (id_prev < id_curr){
+            y = id_prev;
+            x = id_curr;
+            dir = 2;
+        } else {
+            on_deadlock(curr_layer, "recursion detected");
+            return;
+        }
+        int addr = y*SYNCOPE_MAX_LAYERS + x;
+        int res = transitions[addr].counter.exchange(dir);
+        if (res && res != dir) {
+            on_deadlock(curr_layer, "deadlock detected");
+        }
+    }
 } // namespace detail
 
 // namespace locks
@@ -205,10 +197,13 @@ namespace detail {
         size_t value_;
         bool owns_lock_;
         detail::LockLayerImpl& lock_pool_;
+#ifdef  SYNCOPE_DETECT_DEADLOCKS
+        const char* loc_;
+#endif
 
         void lock() {
-#ifdef SYNCOPE_DETECT_DEADLOCKS
-            lock_pool_.detector_lock();
+#ifdef  SYNCOPE_DETECT_DEADLOCKS
+            lock_pool_.detector_lock(loc_);
 #endif
             lock_pool_.lock(value_);
             owns_lock_ = true;
@@ -223,10 +218,18 @@ namespace detail {
         }
     public:
         template<typename Hash>
-        LockGuard(T const* ptr, detail::LockLayerImpl& lockpool, Hash const& hash)
+        LockGuard( T const* ptr
+                 , detail::LockLayerImpl& lockpool
+#ifdef SYNCOPE_DETECT_DEADLOCKS
+                 , const char* loc
+#endif
+                 , Hash const& hash)
             : value_(hash(reinterpret_cast<size_t>(ptr)))
             , owns_lock_(false)
             , lock_pool_(lockpool)
+#ifdef SYNCOPE_DETECT_DEADLOCKS
+            , loc_(loc)
+#endif
         {
             lock();
         }
@@ -239,6 +242,9 @@ namespace detail {
             : value_(other.value_)
             , owns_lock_(other.owns_lock_)
             , lock_pool_(other.lock_pool_)
+#ifdef SYNCOPE_DETECT_DEADLOCKS
+            , loc_(other.loc_)
+#endif
         {
             other.owns_lock_ = false;
         }
@@ -247,6 +253,9 @@ namespace detail {
             value_ = other.value_;
             other.owns_lock_ = false;
             assert(&lock_pool_ == &other.lock_pool_);
+#ifdef SYNCOPE_DETECT_DEADLOCKS
+            loc_ = other.loc_;
+#endif
         }
 
         ~LockGuard() {
@@ -263,7 +272,11 @@ namespace detail {
         };
         detail::LockLayerImpl& impl_;
         std::array<size_t, H> hashes_;
+        size_t hashes_count_;
         bool owns_lock_;
+#ifdef  SYNCOPE_DETECT_DEADLOCKS
+        const char* loc_;
+#endif
 
         template<int I, int M, int H>
         struct fill_hashes
@@ -288,10 +301,10 @@ namespace detail {
 
         void lock() {
 #ifdef SYNCOPE_DETECT_DEADLOCKS
-            impl_.detector_lock();
+            impl_.detector_lock(loc_);
 #endif
-            for (auto h: hashes_) {
-                impl_.lock(h);
+            for (size_t i = 0; i < hashes_count_; i++) {
+                impl_.lock(hashes_[i]);
             }
             owns_lock_ = true;
         }
@@ -300,8 +313,8 @@ namespace detail {
 #ifdef SYNCOPE_DETECT_DEADLOCKS
             impl_.detector_unlock();
 #endif
-            for (auto it = hashes_.crbegin(); it != hashes_.crend(); it++) {
-                impl_.unlock(*it);
+            for (size_t i = hashes_count_ - 1; i != size_t(0u) - 1; i--) {
+                impl_.unlock(hashes_[i]);
             }
             owns_lock_ = false;
         }
@@ -309,14 +322,24 @@ namespace detail {
     public:
 
         template<typename Hash>
-        LockGuardMany(detail::LockLayerImpl& impl, Hash const& hash, T const*... others)
+        LockGuardMany( detail::LockLayerImpl& impl
+#ifdef SYNCOPE_DETECT_DEADLOCKS
+                     , const char* loc
+#endif
+                     , Hash const& hash
+                     , T const*... others)
             : impl_(impl)
             , owns_lock_(false)
+#ifdef SYNCOPE_DETECT_DEADLOCKS
+            , loc_(loc)
+#endif
         {
             auto all = std::tie(others...);
             fill_hashes<0, sizeof...(others), H> fill_all;
             fill_all(hashes_, all, hash);
             std::sort(hashes_.begin(), hashes_.end());
+            auto it = std::unique(hashes_.begin(), hashes_.end());
+            hashes_count_ = std::distance(hashes_.begin(), it);
             lock();
         }
 
@@ -331,6 +354,7 @@ namespace detail {
 
         LockGuardMany(LockGuardMany&& other)
             : impl_(other.impl_)
+            , hashes_count_(other.hashes_count_)
             , owns_lock_(other.owns_lock_)
         {
             std::swap(hashes_, other.hashes_);
@@ -340,6 +364,7 @@ namespace detail {
         LockGuardMany& operator = (LockGuardMany&& other) {
             assert(&other.impl_ == &impl_);
             std::swap(hashes_, other.hashes_);
+            hashes_count_ = other.hashes_count_;
             owns_lock_ = other.owns_lock_;
             other.owns_lock_ = false;
         }
@@ -403,15 +428,34 @@ namespace detail {
           */
         SymmetricLockLayer(detail::StaticString name, int level = -1) : impl_(name.str(), level) {}
 
+
+#ifdef SYNCOPE_DETECT_DEADLOCKS
+        template<class T>
+        LockGuard<T> synchronize(
+                const char* loc,
+                T const* ptr) {
+            return std::move(LockGuard<T>(ptr, impl_, loc, detail::SimpleHash()));
+        }
+#else
         template<class T>
         LockGuard<T> synchronize(T const* ptr) {
             return std::move(LockGuard<T>(ptr, impl_, detail::SimpleHash()));
         }
+#endif
 
+#ifdef SYNCOPE_DETECT_DEADLOCKS
         template<typename... T>
-        LockGuardMany<1, T...> synchronize(T const*... args) {
+        LockGuardMany<1, T...> synchronize_all(
+                const char* loc,
+                T const*... args) {
+            return std::move(LockGuardMany<1, T...>(impl_, loc, detail::SimpleHash2(), args...));
+        }
+#else
+        template<typename... T>
+        LockGuardMany<1, T...> synchronize_all(T const*... args) {
             return std::move(LockGuardMany<1, T...>(impl_, detail::SimpleHash2(), args...));
         }
+#endif
     };
 
     /** Asymmetric lock hierarchy layer.
@@ -428,16 +472,62 @@ namespace detail {
           */
         AsymmetricLockLayer(detail::StaticString name, int level = -1) : impl_(name.str(), level) {}
 
+#ifdef SYNCOPE_DETECT_DEADLOCKS
         template<class T>
-        LockGuard<T> read_lock(T const* ptr) {
+        LockGuard<T> synchronize_read(
+                const char* loc,
+                T const* ptr) {
+            return std::move(LockGuard<T>(ptr, impl_, loc, detail::BiasedHash<P>()));
+        }
+#else
+        template<class T>
+        LockGuard<T> synchronize_read(T const* ptr) {
             return std::move(LockGuard<T>(ptr, impl_, detail::BiasedHash<P>()));
         }
+#endif
 
-        template<typename... T>
-        LockGuardMany<P, T...> write_lock(T const*... args) {
-            return std::move(LockGuardMany<P, T...>(impl_, detail::BiasedHash2<P>(), args...));
+#ifdef SYNCOPE_DETECT_DEADLOCKS
+        template<typename T>
+        LockGuardMany<P, T> synchronize_write(
+                const char* loc,
+                T const* arg) {
+            return std::move(LockGuardMany<P, T>(impl_, loc, detail::BiasedHash2<P>(), arg));
         }
+#else
+        template<typename T>
+        LockGuardMany<P, T> synchronize_write(T const* arg) {
+            return std::move(LockGuardMany<P, T>(impl_, detail::BiasedHash2<P>(), arg));
+        }
+#endif
     };
 }  // namespace syncope
 
 #define STATIC_STRING(x) syncope::detail::StaticString(x"")
+#define SYNCOPE_STRINGIFY_DETAIL(x) #x
+#define SYNCOPE_STRINGIFY(x) SYNCOPE_STRINGIFY_DETAIL(x)
+
+#ifdef SYNCOPE_DETECT_DEADLOCKS
+
+#define _SYNCOPE_LOCK_IMPL(layer, msg, ptr) auto __scope_lock_guard_##layer = layer.synchronize(msg, ptr)
+#define SYNCOPE_LOCK(layer, ptr) _SYNCOPE_LOCK_IMPL(layer, __FILE__ ":" SYNCOPE_STRINGIFY(__LINE__), ptr);
+
+#define _SYNCOPE_LOCK_ALL_IMPL(layer, msg, ...) auto __scope_lock_guard_##layer = layer.synchronize_all(msg, __VA_ARGS__)
+#define SYNCOPE_LOCK_ALL(layer, ...) _SYNCOPE_LOCK_ALL_IMPL(layer, __FILE__ ":" SYNCOPE_STRINGIFY(__LINE__), __VA_ARGS__);
+
+#define _SYNCOPE_LOCK_READ_IMPL(layer, msg, ptr) auto __scope_lock_guard_##layer = layer.synchronize_read(msg, ptr)
+#define SYNCOPE_LOCK_READ(layer, ptr) _SYNCOPE_LOCK_READ_IMPL(layer, __FILE__ ":" SYNCOPE_STRINGIFY(__LINE__), ptr);
+
+#define _SYNCOPE_LOCK_WRITE_IMPL(layer, msg, ptr) auto __scope_lock_guard_##layer = layer.synchronize_write(msg, ptr)
+#define SYNCOPE_LOCK_WRITE(layer, ptr) _SYNCOPE_LOCK_WRITE_IMPL(layer, __FILE__ ":" SYNCOPE_STRINGIFY(__LINE__), ptr);
+
+#else
+
+#define SYNCOPE_LOCK(layer, ptr)  auto __scope_lock_guard_##layer = layer.synchronize(ptr);
+
+#define SYNCOPE_LOCK_ALL(layer, ...)  auto __scope_lock_guard_##layer = layer.synchronize_all(__VA_ARGS__);
+
+#define SYNCOPE_LOCK_READ(layer, ptr) auto __scope_lock_guard_##layer = layer.synchronize_read(ptr);
+
+#define SYNCOPE_LOCK_WRITE(layer, ptr) auto __scope_lock_guard_##layer = layer.synchronize_write(ptr);
+
+#endif
