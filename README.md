@@ -64,7 +64,7 @@ std::shared_ptr<Object> KVStore::get(std::string key) const {
 ```
 In this example I've add method `get` that doesn't change object's internal state and can be called in parallel. This method acquires read-lock and our good old `insert` mthod now acquires write-lock. Asymmetric lock layer is biased toward readers. This means that read-lock is very cheap (cheaper than normal symmetric lock) and write-lock is much more expencive (more expencive than symmetric lock).
 
-## Organaizing your lock hierarchy.
+## Organaizing your lock hierarchy
 Only one lock from any lock layer can be acquired from one thread any time. Different threads can acquire multiple locks from multiple lock layer only in the same order. For example: you have two lock layers - "DataLayer" and "BusinessLogicLayer". Every thread must acquire locks in the same order (even when their are aceccing different objects) in the same global order, for example "DataLayer" first and the "BusinessLogicLayer" second.
 
 It's not safe to lock objects under the lock from the same lock layer. Example:
