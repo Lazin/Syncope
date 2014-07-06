@@ -97,7 +97,7 @@ SYNCOPE_LOCK(outer_lock_layer, &a);
 Just remember that nesting locks from the same lock layer is bad and completely defeats the purpose of the library (splitting all your locks between lock-hierarchy layers).
 
 ##Deadlock detection
-This library implements deadlock detector. It searches for deadlocks between different lock layers and doesn't needs deadlock to actually happend. You can acquire locks in one order from one thread then release them and then you can try to acquire locks in different order from another thread - actual deadlock wouldn't happend but Syncope's deadlock detector will trigger alarm. Deadlock detector is disabled by default, to enable it you must define SYNCOPE_DETECT_DEADLOCKS before including `syncope.hpp`.
+This library implements deadlock detector. It searches for deadlocks between different lock layers and doesn't needs deadlock to actually happend. You can acquire locks in one order from one thread then release them and then you can try to acquire locks in different order from another thread - actual deadlock wouldn't happen but Syncope's deadlock detector will trigger alarm. Deadlock detector is disabled by default, to enable it you must define SYNCOPE_DETECT_DEADLOCKS before including `syncope.hpp`.
 
 ##Performance
 Syncope adds very little overhead. If deadlock detector disabled SYNCOPE_LOCK will calculate very simple hash from pointer to object that will be used to acquire mutex from the pool. If deadlock detector is enabled - some additional overhead will be introduced in particular - one RMW operation per lock will be performed. It can cause contention and performance degradation.
