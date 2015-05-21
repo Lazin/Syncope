@@ -5,7 +5,7 @@ Syncope is a data driven synchronization library for C++11. Unlike any other C++
 
 Syncope is header only. Build script is used only for benchmarks.
 
-The name "Syncope" inspired by syncopation in music because it's all about timings.
+The name "Syncope" inspired by syncopation in music because it's all about timings in both cases.
 
 ## Lock hierarchy
 The very basic concept in syncope is lock-hierarchy. Syncope makes lock-hierarchies explicit. Actually, you don't need any mutexes instead of that just define layers of your lock hierarchy that can be used to lock objects.
