@@ -1,9 +1,11 @@
 README
 ======
 
-Syncope is a data driven synchronization library for C++11. Unlike any other C++ synchronization library, Syncope is unitrusive. That means that there is no need to include something in your data-structures or use inheritance. Syncope is completely external and decoupled synchronization mechanism. Syncope is a proof-of-concept implementation and intended to become stable in future.
+Syncope is a data driven synchronization library for C++11. Unlike any other C++ synchronization library, Syncope is unintrusive. This means that there is no need to include something in your data-structures or to use inheritance. Syncope is completely external and decoupled synchronization mechanism. Syncope is a proof-of-concept implementation and intended to become stable in future.
 
-The name "Syncope" is perfect for synchronization library. First of all in many cases lock must be held for a short time, only when necessary. This reminds me syncopation in music because it's all about timings. Second - both words "synchronization" and "syncopation" sounds similar. And finally - synchronization is often a source of headache and can cause a syncope :)
+Syncope is header only. Build script is used only for benchmarks.
+
+The name "Syncope" inspired by syncopation in music because it's all about timings.
 
 ## Lock hierarchy
 The very basic concept in syncope is lock-hierarchy. Syncope makes lock-hierarchies explicit. Actually, you don't need any mutexes instead of that just define layers of your lock hierarchy that can be used to lock objects.
@@ -62,7 +64,7 @@ std::shared_ptr<Object> KVStore::get(std::string key) const {
   return result;
 }
 ```
-In this example I've add method `get` that doesn't change object's internal state and can be called in parallel. This method acquires read-lock and our good old `insert` mthod now acquires write-lock. Asymmetric lock layer is biased toward readers. This means that read-lock is very cheap (cheaper than normal symmetric lock) and write-lock is much more expencive (more expencive than symmetric lock).
+In this example I've added method `get` that can be called in parallel. This method acquires read-lock and `insert` mthod now acquires write-lock. Asymmetric lock layer is biased toward readers. This means that read-lock is very cheap (cheaper than normal symmetric lock) and write-lock is much more expencive (more expencive than symmetric lock).
 
 ## Organaizing your lock hierarchy
 Only one lock from any lock layer can be acquired from one thread any time. Different threads can acquire multiple locks from multiple lock layer only in the same order. For example: you have two lock layers - "DataLayer" and "BusinessLogicLayer". Every thread must acquire locks in the same order (even when their are aceccing different objects) in the same global order, for example "DataLayer" first and the "BusinessLogicLayer" second.
@@ -77,7 +79,7 @@ SYNCOPE_LOCK(lock_layer, &a);
   SYNCOPE_LOCK(lock_layer, &b);  // can cause deadlock
 }
 ```
-Syncope uses lock pool and hashing unser the hood so you can get deadlock even if you lock on different objects this way. You must synchronize both objects with one call instead:
+Syncope uses lock pool and hashing under the hood so you can get deadlock even if you lock on different objects this way. You must synchronize both objects with one call instead:
 ```C++
 Foo a, b;
 ...
@@ -97,9 +99,9 @@ SYNCOPE_LOCK(outer_lock_layer, &a);
 Just remember that nesting locks from the same lock layer is bad and completely defeats the purpose of the library (splitting all your locks between lock-hierarchy layers).
 
 ##Deadlock detection
-This library implements deadlock detector. It searches for deadlocks between different lock layers and doesn't needs deadlock to actually happend. You can acquire locks in one order from one thread then release them and then you can try to acquire locks in different order from another thread - actual deadlock wouldn't happen but Syncope's deadlock detector will trigger alarm. Deadlock detector is disabled by default, to enable it you must define SYNCOPE_DETECT_DEADLOCKS before including `syncope.hpp`.
+This library implements deadlock detector. It searches for deadlocks between different lock layers and doesn't needs deadlock to actually happen. You can acquire locks in one order from one thread then release them and then get an error trying to asquire locks in different order from another (or the same) thread even if actual deadlock isn't occured. Deadlock detector is disabled by default, to enable it you must define SYNCOPE_DETECT_DEADLOCKS before including `syncope.hpp`.
 
 ##Performance
 Syncope adds very little overhead. If deadlock detector disabled SYNCOPE_LOCK will calculate very simple hash from pointer to object that will be used to acquire mutex from the pool. If deadlock detector is enabled - some additional overhead will be introduced in particular - one RMW operation per lock will be performed. It can cause contention and performance degradation.
 
-`AsymmetricLockLayer` can be up to eight times faster than pthread_rwlock in read-heavy scenarios. Readers acquires only one uncontended lock and this can be done really fast (something about 10ns). Writers needs to acquire many locks (number of locks defined by the SYNCOPE_READ_SIDE_PARALLELISM macro-definition) but usually only some of them are contended. Acquiring contended lock is pricey (hundreds of nanoseconds) but most of the acquired locks is unconended so almost free in compare with contended locks. Because of that read-locks are fast and write-locks is only moderately slow.
+`AsymmetricLockLayer` can be up to eight times faster than pthread_rwlock in read-heavy scenarios. Readers acquires only one uncontended lock and this can be done really fast (something about 10ns). Writers needs to acquire many locks (number of locks defined by the SYNCOPE_READ_SIDE_PARALLELISM macro-definition) but usually only some of them are contended. Acquiring contended lock is pricey (hundreds of nanoseconds) but most of the acquired locks is unconended so almost free in compare with contended locks. Because of that read-locks are fast and write-locks are only moderately slow.
