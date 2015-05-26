@@ -1,4 +1,5 @@
-// TODO: add licence
+#ifndef SYNCOPE_HPP
+#define SYNCOPE_HPP
 
 #ifndef SYNCOPE_NUM_LOCKS
 #   define SYNCOPE_NUM_LOCKS 0x100
@@ -529,5 +530,7 @@ namespace detail {
 #define SYNCOPE_LOCK_READ(layer, ptr) auto __scope_lock_guard_##layer = layer.synchronize_read(ptr);
 
 #define SYNCOPE_LOCK_WRITE(layer, ptr) auto __scope_lock_guard_##layer = layer.synchronize_write(ptr);
+
+#endif
 
 #endif
