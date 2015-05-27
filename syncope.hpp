@@ -16,19 +16,19 @@
 #   define SYNCOPE_MAX_DEPTH 0x10
 #endif
 
+#ifdef SYNCOPE_DETECT_DEADLOCKS
 #include <iostream>
-#include <array>
 #include <string>
+#include <exception>
+#include <sstream>
+#endif
+
 #include <mutex>
 #include <memory>
-#include <functional>
 #include <algorithm>
 #include <thread>
 #include <atomic>
 #include <cassert>
-#include <cstring>
-#include <exception>
-#include <sstream>
 
 namespace syncope {
 
