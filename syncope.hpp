@@ -40,17 +40,13 @@ namespace detail {
 
     struct TraceRoot {
         typedef std::tuple<LockLayerImpl*, const char*> Owner;
-        Owner* owners;
+        std::unique_ptr<Owner[]> owners;
         int top;
 
         TraceRoot() 
             : owners(new Owner[SYNCOPE_MAX_DEPTH])
             , top(0)
         {
-        }
-
-        ~TraceRoot() {
-            delete[] owners;
         }
     };
 
