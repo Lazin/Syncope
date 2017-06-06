@@ -98,10 +98,10 @@ SYNCOPE_LOCK(outer_lock_layer, &a);
 ```
 Just remember that nesting locks from the same lock layer is bad and completely defeats the purpose of the library (splitting all your locks between lock-hierarchy layers).
 
-##Deadlock detection
+## Deadlock detection
 This library implements deadlock detector. It searches for deadlocks between different lock layers and doesn't needs deadlock to actually happen. You can acquire locks in one order from one thread then release them and then get an error trying to asquire locks in different order from another (or the same) thread even if actual deadlock isn't occured. Deadlock detector is disabled by default, to enable it you must define SYNCOPE_DETECT_DEADLOCKS before including `syncope.hpp`.
 
-##Performance
+## Performance
 Syncope adds very little overhead. If deadlock detector disabled SYNCOPE_LOCK will calculate very simple hash from pointer to object that will be used to acquire mutex from the pool. If deadlock detector is enabled - some additional overhead will be introduced in particular - one RMW operation per lock will be performed. It can cause contention and performance degradation.
 
 `AsymmetricLockLayer` can be up to eight times faster than pthread_rwlock in read-heavy scenarios. Readers acquires only one uncontended lock and this can be done really fast (something about 10ns). Writers needs to acquire many locks (number of locks defined by the SYNCOPE_READ_SIDE_PARALLELISM macro-definition) but usually only some of them are contended. Acquiring contended lock is pricey (hundreds of nanoseconds) but most of the acquired locks is unconended so almost free in compare with contended locks. Because of that read-locks are fast and write-locks are only moderately slow.
