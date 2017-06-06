@@ -1,9 +1,9 @@
 README
 ======
 
-Syncope is a data driven synchronization library for C++11. Unlike any other C++ synchronization library, Syncope is unintrusive. This means that there is no need to include something in your data-structures or to use inheritance. Syncope is completely external and decoupled synchronization mechanism. Syncope is a proof-of-concept implementation and intended to become stable in future.
+Syncope is a data driven synchronization library for C++11 inspired by [this article written by Herb Sutter](http://www.drdobbs.com/parallel/use-lock-hierarchies-to-avoid-deadlock/204801163). Unlike any other C++ synchronization library Syncope is unintrusive. This means that there is no need to include something in your data-structures or to use inheritance. Syncope is completely external and decoupled synchronization mechanism.
 
-Syncope is header only. Build script is used only for benchmarks.
+The library is header only. Build script is used only for benchmarks.
 
 The name "Syncope" inspired by syncopation in music because it's all about timings in both cases.
 
